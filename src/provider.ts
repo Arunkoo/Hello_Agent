@@ -1,21 +1,39 @@
 type Provider = "openai" | "gemini" | "groq";
 
-type HelloOutput = {
+export type HelloOutput = {
   ok: true;
   provider: Provider;
   model: string;
   message: string;
 };
 
-type GeminiGenerateContentResponse = {
-  candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+const DEFAULT_PROMPT = "Hey, how can I help you?";
+
+async function ensureOk(response: Response, provider: string) {
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`${provider} API error ${response.status}: ${text}`);
+  }
+}
+
+type GeminiResponse = {
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{
+        text?: string;
+      }>;
+    };
+  }>;
 };
 
-async function HelloGemini(): Promise<HelloOutput> {
+async function helloGemini(): Promise<HelloOutput> {
   const apiKey = process.env.GOOGLE_API_KEY;
-  if (!apiKey) throw new Error("Google api key is not presented!");
+  if (!apiKey) {
+    throw new Error("GOOGLE_API_KEY is missing");
+  }
+
   const model = "gemini-2.0-flash-lite";
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?=key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
   const response = await fetch(url, {
     method: "POST",
@@ -25,63 +43,115 @@ async function HelloGemini(): Promise<HelloOutput> {
     body: JSON.stringify({
       contents: [
         {
-          parts: [
-            {
-              text: "Hey, how  can i help you?",
-            },
-          ],
+          parts: [{ text: DEFAULT_PROMPT }],
         },
       ],
     }),
   });
-  if (!response.ok)
-    throw new Error(`Gemini ${response.status}: ${await response.text()}`);
-  const json = (await response.json()) as GeminiGenerateContentResponse;
-  const text = json.candidates?.[0].content?.parts?.[0]?.text ?? "Hello output";
+
+  await ensureOk(response, "Gemini");
+
+  const data = (await response.json()) as GeminiResponse;
+  const message =
+    data.candidates?.[0]?.content?.parts?.[0]?.text ?? "Hello output";
 
   return {
     ok: true,
     provider: "gemini",
     model,
-    message: String(text).trim(),
+    message: message.trim(),
   };
 }
 
-type OpenAiChatCompletionResponse = {
-  choices?: Array<{ message?: { content?: string } }>;
+type OpenAIStyleResponse = {
+  choices?: Array<{
+    message?: {
+      content?: string;
+    };
+  }>;
 };
 
-export async function helloGroq(): Promise<HelloOutput> {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) throw new Error("Groq api key is not present");
-  const model = "llama-3.1-8b-instant";
-  const url = `https://api.groq.com/openai/v1/chat/completions`;
+async function openAICompatibleCall(
+  provider: "openai" | "groq",
+  url: string,
+  apiKey: string,
+  model: string
+): Promise<HelloOutput> {
   const response = await fetch(url, {
     method: "POST",
     headers: {
-      "Content-Type": "Application/Json",
+      "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
       model,
-      message: [
+      messages: [
         {
           role: "user",
-          content: "How, i can help you?",
+          content: DEFAULT_PROMPT,
         },
       ],
-      temprature: 0,
+      temperature: 0,
     }),
   });
-  if (!response.ok)
-    throw new Error(`Groq ${response.status}:${await response.text()}`);
-  const json = (await response.json()) as OpenAiChatCompletionResponse;
-  const content = json?.choices?.[0].message?.content ?? "Hello output";
+
+  await ensureOk(response, provider);
+
+  const data = (await response.json()) as OpenAIStyleResponse;
+  const message = data.choices?.[0]?.message?.content ?? "Hello output";
 
   return {
     ok: true,
-    provider: "groq",
+    provider,
     model,
-    message: String(content).trim(),
+    message: message.trim(),
   };
+}
+
+async function helloGroq(): Promise<HelloOutput> {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) {
+    throw new Error("GROQ_API_KEY is missing");
+  }
+
+  return openAICompatibleCall(
+    "groq",
+    "https://api.groq.com/openai/v1/chat/completions",
+    apiKey,
+    "llama-3.1-8b-instant"
+  );
+}
+
+async function helloOpenAI(): Promise<HelloOutput> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    throw new Error("OPENAI_API_KEY is missing");
+  }
+
+  return openAICompatibleCall(
+    "openai",
+    "https://api.openai.com/v1/chat/completions",
+    apiKey,
+    "gpt-5-nano"
+  );
+}
+
+export async function selectProvider(): Promise<HelloOutput> {
+  const provider = (process.env.PROVIDER || "").toLowerCase() as Provider;
+
+  switch (provider) {
+    case "gemini":
+      return helloGemini();
+
+    case "groq":
+      return helloGroq();
+
+    case "openai":
+      return helloOpenAI();
+
+    default:
+      throw new Error(
+        `Unsupported PROVIDER="${provider}". Use: openai | gemini | groq`
+      );
+  }
 }
